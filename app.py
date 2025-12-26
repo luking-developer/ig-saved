@@ -4,17 +4,18 @@ import os
 import time
 import random
 import json
+import http.cookiejar
 from datetime import datetime
 from pathlib import Path
 
-# --- CONFIGURACIÓN ESTRATÉGICA ---
+# --- CONFIGURACIÓN ---
 BASE_DIR = Path("descargas_instagram")
 LOG_FILE = "posts_descargados.log"
 QUOTA_FILE = "cuota_diaria.json"
-MAX_FILES_PER_DAY = 400  # Límite conservador para evitar baneo
+COOKIE_FILE = "instagram.com_cookies.txt" # El archivo de la extensión
+MAX_FILES_PER_DAY = 400 
 
-if not os.path.exists(BASE_DIR):
-    os.makedirs(BASE_DIR)
+if not os.path.exists(BASE_DIR): os.makedirs(BASE_DIR)
 
 class IGDownloader:
     def __init__(self, username):
@@ -24,7 +25,7 @@ class IGDownloader:
             download_video_thumbnails=False,
             save_metadata=False,
             post_metadata_txt_pattern="",
-            dirname_pattern="{target}" 
+            dirname_pattern="{target}"
         )
         self.total_files_session = 0
         self.post_count = 0
@@ -33,22 +34,15 @@ class IGDownloader:
 
     def _cargar_logs(self):
         if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, "r") as f:
-                return set(line.strip() for line in f)
+            with open(LOG_FILE, "r") as f: return set(line.strip() for line in f)
         return set()
-
-    def _registrar_post(self, post_id):
-        with open(LOG_FILE, "a") as f:
-            f.write(f"{post_id}\n")
-        self.processed_ids.add(post_id)
 
     def _cargar_cuota(self):
         hoy = datetime.now().strftime("%Y-%m-%d")
         if os.path.exists(QUOTA_FILE):
             with open(QUOTA_FILE, "r") as f:
                 data = json.load(f)
-                if data.get("fecha") == hoy:
-                    return data.get("cantidad", 0)
+                if data.get("fecha") == hoy: return data.get("cantidad", 0)
         return 0
 
     def _actualizar_cuota(self, n):
@@ -57,70 +51,72 @@ class IGDownloader:
         with open(QUOTA_FILE, "w") as f:
             json.dump({"fecha": hoy, "cantidad": self.daily_count}, f)
 
-    def cargar_sesion_inyectada(self):
+    def inyectar_cookies_txt(self):
+        """Lee el archivo .txt de la extensión e inyecta las cookies en Instaloader."""
+        if not os.path.exists(COOKIE_FILE):
+            st.error(f"No se encontró el archivo {COOKIE_FILE}")
+            return False
+        
         try:
-            self.L.load_session_from_file(self.username)
+            cj = http.cookiejar.MozillaCookieJar(COOKIE_FILE)
+            cj.load(ignore_discard=True, ignore_expires=True)
+            self.L.context._session.cookies.update(cj)
+            
+            # Validar si las cookies funcionan intentando obtener el perfil propio
+            self.L.test_login() 
             return True
-        except Exception:
+        except Exception as e:
+            st.error(f"Error al procesar cookies: {e}")
             return False
 
     def descargar_colecciones(self):
         try:
             profile = instaloader.Profile.from_username(self.L.context, self.username)
-            st.info(f"Cuota hoy: {self.daily_count}/{MAX_FILES_PER_DAY} archivos.")
+            st.success(f"Sesión validada para: {self.username}")
 
             for post in profile.get_saved_posts():
-                # 1. Verificar límite diario
                 if self.daily_count >= MAX_FILES_PER_DAY:
-                    st.error("⚠️ LÍMITE DIARIO ALCANZADO. Deteniendo para proteger tu cuenta.")
+                    st.error("Límite diario alcanzado.")
                     break
 
-                # 2. Saltar si ya se descargó
                 if post.shortcode in self.processed_ids:
                     continue
 
-                # 3. Pausa aleatoria cada 100 posts
                 if self.post_count > 0 and self.post_count % 100 == 0:
                     espera = random.randint(300, 420)
-                    st.warning(f"Simulando comportamiento humano... Pausa de {espera}s.")
+                    st.warning(f"Pausa antideteción: {espera}s...")
                     time.sleep(espera)
 
-                # 4. Proceso de descarga
                 target_path = BASE_DIR / post.owner_username
                 n_items = post.mediacount if post.typename == 'GraphSidecar' else 1
                 
-                # Verificar que no superaremos la cuota con este post
-                if self.daily_count + n_items > MAX_FILES_PER_DAY:
-                    st.warning("El siguiente post excede la cuota diaria. Finalizando.")
-                    break
+                if self.daily_count + n_items > MAX_FILES_PER_DAY: break
 
                 try:
                     self.L.download_post(post, target=str(target_path))
-                    self._registrar_post(post.shortcode)
+                    with open(LOG_FILE, "a") as f: f.write(f"{post.shortcode}\n")
+                    self.processed_ids.add(post.shortcode)
                     self._actualizar_cuota(n_items)
                     self.total_files_session += n_items
                     self.post_count += 1
-                    
-                    st.write(f"📥 {self.post_count}. [{post.owner_username}] +{n_items} (Total hoy: {self.daily_count})")
+                    st.write(f"📥 [{post.owner_username}] +{n_items} (Hoy: {self.daily_count})")
                 except Exception as e:
-                    st.error(f"Error en post {post.shortcode}: {e}")
-                    time.sleep(5) # Pausa breve ante error
+                    st.error(f"Error en post: {e}")
+                    time.sleep(5)
 
         except Exception as e:
-            st.error(f"Fallo crítico: {e}")
+            st.error(f"Error de sesión: {e}. ¿Estás logueado en el navegador?")
 
-# --- UI STREAMLIT ---
-st.title("Asesor Brutal: Scraper Seguro")
+# --- UI ---
+st.title("IG Downloader: Edición Cookies Directas")
+st.info(f"Asegúrate de que '{COOKIE_FILE}' esté en la carpeta del script.")
 
-user = st.text_input("Usuario de Instagram")
+user = st.text_input("Tu nombre de usuario de Instagram")
 
-if st.button("Iniciar Extracción"):
+if st.button("Iniciar con Cookies.txt"):
     if user:
         downloader = IGDownloader(user)
-        if downloader.cargar_sesion_inyectada():
+        if downloader.inyectar_cookies_txt():
             downloader.descargar_colecciones()
-            st.metric("Descargados en esta sesión", downloader.total_files_session)
         else:
-            st.error("No se encontró el archivo de sesión. Ejecuta 'instaloader -l tu_usuario' primero.")
-    else:
-        st.error("Usuario requerido.")
+            st.warning("Fallo al inyectar cookies. Revisa el archivo .txt")
