@@ -7,12 +7,12 @@ import json
 import http.cookiejar
 from datetime import datetime
 from pathlib import Path
+import tempfile
 
-# --- CONFIGURACIÓN ---
+# --- CONFIGURACIÓN ESTRATÉGICA ---
 BASE_DIR = Path("descargas_instagram")
 LOG_FILE = "posts_descargados.log"
 QUOTA_FILE = "cuota_diaria.json"
-COOKIE_FILE = "instagram.com_cookies.txt" # El archivo de la extensión
 MAX_FILES_PER_DAY = 400 
 
 if not os.path.exists(BASE_DIR): os.makedirs(BASE_DIR)
@@ -51,22 +51,16 @@ class IGDownloader:
         with open(QUOTA_FILE, "w") as f:
             json.dump({"fecha": hoy, "cantidad": self.daily_count}, f)
 
-    def inyectar_cookies_txt(self):
-        """Lee el archivo .txt de la extensión e inyecta las cookies en Instaloader."""
-        if not os.path.exists(COOKIE_FILE):
-            st.error(f"No se encontró el archivo {COOKIE_FILE}")
-            return False
-        
+    def inyectar_cookies(self, cookie_file_path):
+        """Inyecta las cookies desde una ruta de archivo específica."""
         try:
-            cj = http.cookiejar.MozillaCookieJar(COOKIE_FILE)
+            cj = http.cookiejar.MozillaCookieJar(cookie_file_path)
             cj.load(ignore_discard=True, ignore_expires=True)
             self.L.context._session.cookies.update(cj)
-            
-            # Validar si las cookies funcionan intentando obtener el perfil propio
             self.L.test_login() 
             return True
         except Exception as e:
-            st.error(f"Error al procesar cookies: {e}")
+            st.error(f"Error crítico en cookies: {e}")
             return False
 
     def descargar_colecciones(self):
@@ -76,7 +70,7 @@ class IGDownloader:
 
             for post in profile.get_saved_posts():
                 if self.daily_count >= MAX_FILES_PER_DAY:
-                    st.error("Límite diario alcanzado.")
+                    st.error("LÍMITE DIARIO ALCANZADO. Abortando para proteger la cuenta.")
                     break
 
                 if post.shortcode in self.processed_ids:
@@ -84,7 +78,7 @@ class IGDownloader:
 
                 if self.post_count > 0 and self.post_count % 100 == 0:
                     espera = random.randint(300, 420)
-                    st.warning(f"Pausa antideteción: {espera}s...")
+                    st.warning(f"Protocolo de seguridad: Pausa de {espera}s...")
                     time.sleep(espera)
 
                 target_path = BASE_DIR / post.owner_username
@@ -99,24 +93,43 @@ class IGDownloader:
                     self._actualizar_cuota(n_items)
                     self.total_files_session += n_items
                     self.post_count += 1
-                    st.write(f"📥 [{post.owner_username}] +{n_items} (Hoy: {self.daily_count})")
+                    st.write(f"📥 [{post.owner_username}] +{n_items} items (Total hoy: {self.daily_count})")
                 except Exception as e:
-                    st.error(f"Error en post: {e}")
+                    st.error(f"Error en post {post.shortcode}: {e}")
                     time.sleep(5)
 
         except Exception as e:
-            st.error(f"Error de sesión: {e}. ¿Estás logueado en el navegador?")
+            st.error(f"Error de sesión: {e}")
 
-# --- UI ---
-st.title("IG Downloader: Edición Cookies Directas")
-st.info(f"Asegúrate de que '{COOKIE_FILE}' esté en la carpeta del script.")
+# --- INTERFAZ STREAMLIT ---
+st.set_page_config(page_title="IG Deep Scraper", page_icon="🕵️")
+st.title("🕵️ IG Saved Downloader (Cookie Edition)")
 
 user = st.text_input("Tu nombre de usuario de Instagram")
 
-if st.button("Iniciar con Cookies.txt"):
-    if user:
+# Lógica de carga de archivos
+cookie_source = None
+DEFAULT_COOKIE_PATH = "instagram.com_cookies.txt"
+
+if os.path.exists(DEFAULT_COOKIE_PATH):
+    st.info(f"✅ Archivo '{DEFAULT_COOKIE_PATH}' detectado localmente.")
+    cookie_source = DEFAULT_COOKIE_PATH
+else:
+    st.warning("No se detectó archivo de cookies en la carpeta.")
+    uploaded_file = st.file_uploader("Sube tu archivo 'instagram.com_cookies.txt'", type=["txt"])
+    if uploaded_file is not None:
+        # Guardar temporalmente el archivo subido
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            cookie_source = tmp_file.name
+
+if st.button("Iniciar Extracción Inteligente"):
+    if not user:
+        st.error("Debes ingresar tu nombre de usuario.")
+    elif not cookie_source:
+        st.error("Debes subir un archivo de cookies válido.")
+    else:
         downloader = IGDownloader(user)
-        if downloader.inyectar_cookies_txt():
+        if downloader.inyectar_cookies(cookie_source):
             downloader.descargar_colecciones()
-        else:
-            st.warning("Fallo al inyectar cookies. Revisa el archivo .txt")
+            st.balloons()
