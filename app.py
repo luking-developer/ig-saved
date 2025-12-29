@@ -53,15 +53,40 @@ class IGDownloader:
             json.dump({"fecha": hoy, "cantidad": self.daily_count}, f)
 
     def inyectar_cookies(self, cookie_file_path):
-        """Inyecta las cookies desde una ruta de archivo específica."""
         try:
             cj = http.cookiejar.MozillaCookieJar(cookie_file_path)
             cj.load(ignore_discard=True, ignore_expires=True)
             self.L.context._session.cookies.update(cj)
-            self.L.test_login() 
-            return True
+            
+            # --- REFUERZO DE SEGURIDAD ---
+            # Extraemos el csrftoken de las cookies cargadas para los headers
+            csrf_token = None
+            for cookie in cj:
+                if cookie.name == 'csrftoken':
+                    csrf_token = cookie.value
+                    break
+            
+            if csrf_token:
+                # Forzamos el header que Instagram exige en GraphQL
+                self.L.context._session.headers.update({
+                    'x-csrftoken': csrf_token,
+                    'referer': 'https://www.instagram.com/',
+                    'x-ig-app-id': '936619743392459' # ID estándar de la web de IG
+                })
+            
+            # Validamos no solo la conexión, sino la identidad
+            try:
+                username_check = self.L.test_login()
+                if not username_check or username_check != self.username:
+                    st.error(f"Sesión inválida. Se esperaba a {self.username} pero se detectó a {username_check}")
+                    return False
+                return True
+            except Exception:
+                st.error("Instagram rechazó la sesión. Las cookies han expirado o son insuficientes.")
+                return False
+
         except Exception as e:
-            st.error(f"Error crítico en cookies: {e}")
+            st.error(f"Error procesando el archivo: {e}")
             return False
 
     def descargar_colecciones(self):
